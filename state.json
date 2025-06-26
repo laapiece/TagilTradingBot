@@ -1,0 +1,19 @@
+{
+    "is_running": false,
+    "is_paused": false,
+    "paused_until": null,
+    "daily_initial_balance": 10000.0,
+    "current_balance": 10000.0,
+    "open_positions": [],
+    "last_daily_reset": "2025-06-26",
+    "current_trading_symbol": "NDAQ",
+    "monitored_stocks": [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "NVDA"
+    ],
+    "news_sentiment_threshold": 0.8,
+    "send_trade_alerts": true,
+    "trade_amount_usd": 300.0
+}

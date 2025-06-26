@@ -13,32 +13,48 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.historical import StockHistoricalDataClient
 from datetime import datetime, timedelta
+from requests.exceptions import HTTPError
 
 DATA_DIR = "data"
 TRADES_FILE = os.path.join(DATA_DIR, "trades.parquet")
 
 def get_market_data(api_client: StockHistoricalDataClient, symbol="AAPL", timeframe=TimeFrame.Hour, limit=100):
     """Récupère les données de marché OHLCV via l'API Alpaca."""
+    if not isinstance(limit, int) or limit <= 0:
+        print("Erreur: La limite doit être un entier positif.")
+        return None
+
     print(f"Récupération des {limit} dernières bougies pour {symbol} en {timeframe}...")
     try:
         if not api_client:
             raise ValueError("Client API Alpaca non initialisé.")
         
         # Définir la période de temps pour la requête
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=limit * timeframe.value) # Approximation
+        end_date = pd.Timestamp.now(tz='America/New_York').floor('1min') # Use pandas for timezone-aware timestamp
+        # Calculate start_date based on timeframe and limit to ensure enough data is fetched
+        if timeframe.unit == 'Min':
+            delta = timedelta(minutes=timeframe.amount * limit)
+        elif timeframe.unit == 'Hour':
+            delta = timedelta(hours=timeframe.amount * limit)
+        elif timeframe.unit == 'Day':
+            delta = timedelta(days=timeframe.amount * limit)
+        else:
+            delta = timedelta(days=30) # Default for other timeframes
+        start_date = end_date - delta
 
         request_params = StockBarsRequest(
             symbol_or_symbols=[symbol],
             timeframe=timeframe,
-            start=start_date,
-            end=end_date
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            adjustment='raw' # Use raw data
         )
         
         bars = api_client.get_stock_bars(request_params).df
         
         if bars.empty:
-            raise ValueError("Aucune donnée Alpaca reçue.")
+            print(f"Avertissement : Aucune donnée de marché reçue d'Alpaca pour {symbol}.")
+            return None
 
         # Alpaca retourne un DataFrame multi-indexé, on le simplifie
         df = bars.loc[symbol].reset_index()
@@ -48,18 +64,15 @@ def get_market_data(api_client: StockHistoricalDataClient, symbol="AAPL", timefr
 
         print("Données de marché Alpaca récupérées.")
         return df
+    except HTTPError as e:
+        if e.response.status_code == 403:
+            print(f"ERREUR: Accès refusé (403 Forbidden) pour {symbol}. Veuillez vérifier vos clés API Alpaca et votre abonnement aux données. Détails: {e}")
+        else:
+            print(f"Erreur HTTP lors de la récupération des données de marché Alpaca pour {symbol} : {e}")
+        return None
     except Exception as e:
-        print(f"Erreur lors de la récupération des données de marché Alpaca : {e}. Utilisation des données de test.")
-        # Fallback sur des données de test si l'API échoue
-        data = {
-            'Open': [100, 102, 101, 103, 105, 104, 106, 108, 107, 109, 110, 112, 111, 113],
-            'High': [103, 104, 103, 105, 106, 106, 108, 110, 109, 111, 112, 114, 113, 115],
-            'Low': [99, 101, 100, 102, 104, 103, 105, 107, 106, 108, 109, 110, 110, 112],
-            'Close': [102, 101, 103, 105, 104, 106, 108, 107, 109, 110, 112, 111, 113, 114],
-            'Volume': [10000, 11000, 10500, 12000, 11500, 12500, 13000, 12800, 13500, 14000, 14500, 14200, 14800, 15000]
-        }
-        df = pd.DataFrame(data)
-        return df
+        print(f"Erreur critique lors de la récupération des données de marché Alpaca pour {symbol} : {e}")
+        return None
 
 def calculate_indicators(df: pd.DataFrame):
     """Calcule tous les indicateurs techniques nécessaires."""

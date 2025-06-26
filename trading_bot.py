@@ -1,16 +1,14 @@
-# trading_bot.py
-"""
-Cœur logique du bot de trading.
-Orchestre les modules, gère l'état, exécute les trades
-et applique la gestion des risques.
-"""
-
 import os
 import time
 import uuid
 import threading
 import ccxt # For broker API
 import asyncio # For async operations
+import json
+import pandas as pd
+import discord
+from alpaca.data.historical import StockHistoricalDataClient
+import json
 from alpaca.data.timeframe import TimeFrame # Import TimeFrame
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -18,7 +16,7 @@ from dotenv import load_dotenv
 # Importer les modules personnalisés
 import data_handler as dh
 import market_predictor as mp
-from discord_reporter import start_discord_bot
+import discord_reporter as dr # Import dr
 
 # Charger les variables d'environnement
 load_dotenv()
@@ -28,6 +26,7 @@ SYMBOL = os.getenv("TRADE_SYMBOL", "BTC/USDT")
 TIMEFRAME_STR = os.getenv("TRADE_TIMEFRAME", "1Hour")
 TIMEFRAME = getattr(TimeFrame, TIMEFRAME_STR.upper(), TimeFrame.Hour) # Map string to TimeFrame enum
 TRADE_AMOUNT_USD = float(os.getenv("TRADE_AMOUNT_USD", 100)) # Montant à trader en USD
+STATE_FILE = "state.json"
 
 # Paramètres de gestion des risques
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 0.02))  # 2%
@@ -37,46 +36,115 @@ MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", 0.05)) # 5%
 class TradingBot:
     def __init__(self):
         self.api_client = self._initialize_broker_api()
-        self.state = {
-            "is_running": True,
-            "is_paused": False,
-            "paused_until": None,
-            "daily_initial_balance": float(os.getenv("INITIAL_BALANCE", 10000)),
-            "current_balance": float(os.getenv("INITIAL_BALANCE", 10000)),
-            "open_positions": [], # List of dicts, each representing an open trade
-            "last_daily_reset": datetime.now().date(),
-            "current_trading_symbol": os.getenv("TRADE_SYMBOL", "SPY"), # Default to index ETF
-            "monitored_stocks": [s.strip() for s in os.getenv("MONITORED_STOCKS", "").split(',') if s.strip()],
-            "news_sentiment_threshold": float(os.getenv("NEWS_SENTIMENT_THRESHOLD", 0.8)),
-            "send_trade_alerts": True,
-            "trade_amount_usd": TRADE_AMOUNT_USD
-        }
+        self.state = self.load_state() # Charger l'état au démarrage
+        self.state["is_running"] = True # S'assurer que le bot est toujours prêt à démarrer
         print("Bot de trading initialisé.")
 
     def _initialize_broker_api(self):
-        # Placeholder for actual CCXT initialization
-        # You would typically get API keys from .env
-        # exchange_id = os.getenv("EXCHANGE_ID", "binance")
-        # api_key = os.getenv("API_KEY")
-        # secret = os.getenv("SECRET")
-        # exchange_class = getattr(ccxt, exchange_id)
-        # return exchange_class({
-        #     'apiKey': api_key,
-        #     'secret': secret,
-        #     'enableRateLimit': True,
-        # })
-        print("Initialisation de l'API du broker (placeholder)...")
-        return None # Return None for now, using test data
+        """Initialise le client API Alpaca."""
+        api_key = os.getenv("ALPACA_API_KEY")
+        secret_key = os.getenv("ALPACA_SECRET_KEY")
+        # La valeur par défaut est True si la variable n'est pas définie ou n'est pas 'false'
+        paper_trading = os.getenv("ALPACA_PAPER_TRADING", "true").lower() != 'false'
+        
+        if not api_key or not secret_key:
+            print("ERREUR CRITIQUE: Les clés API Alpaca (ALPACA_API_KEY, ALPACA_SECRET_KEY) ne sont pas définies dans le fichier .env.")
+            return None
+
+        if paper_trading:
+            print("Initialisation du client API Alpaca en mode PAPER TRADING...")
+        else:
+            print("Initialisation du client API Alpaca en mode LIVE TRADING...")
+
+        return StockHistoricalDataClient(api_key, secret_key)
+
+    def save_state(self):
+        """Sauvegarde l'état actuel du bot dans un fichier JSON."""
+        print("Sauvegarde de l'état du bot...")
+        # La conversion en str pour datetime est nécessaire pour la sérialisation JSON
+        state_to_save = self.state.copy()
+        state_to_save["paused_until"] = self.state["paused_until"].isoformat() if self.state["paused_until"] else None
+        state_to_save["last_daily_reset"] = self.state["last_daily_reset"].isoformat()
+        # Ne pas sauvegarder les PNL non réalisés, ils sont calculés à la volée
+        for pos in state_to_save.get("open_positions", []):
+            pos.pop('unrealized_pnl', None)
+            pos.pop('unrealized_pnl_pct', None)
+            pos.pop('current_price', None)
+
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state_to_save, f, indent=4)
+        print("État sauvegardé.")
+
+    def load_state(self):
+        """Charge l'état du bot depuis un fichier JSON, sinon retourne un état par défaut."""
+        try:
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+                # Reconvertir les chaînes de date en objets datetime
+                state["paused_until"] = datetime.fromisoformat(state["paused_until"]) if state["paused_until"] else None
+                state["last_daily_reset"] = datetime.fromisoformat(state["last_daily_reset"]).date()
+                print("État du bot chargé depuis le fichier.")
+                return state
+        except (FileNotFoundError, json.JSONDecodeError):
+            print("Aucun état de sauvegarde valide trouvé. Initialisation avec un état par défaut.")
+            return {
+                "is_running": True,
+                "is_paused": False,
+                "paused_until": None,
+                "daily_initial_balance": float(os.getenv("INITIAL_BALANCE", 10000)),
+                "current_balance": float(os.getenv("INITIAL_BALANCE", 10000)),
+                "open_positions": [],
+                "last_daily_reset": datetime.now().date(),
+                "current_trading_symbol": os.getenv("TRADE_SYMBOL", "SPY"),
+                "monitored_stocks": [s.strip() for s in os.getenv("MONITORED_STOCKS", "").split(',') if s.strip()],
+                "news_sentiment_threshold": float(os.getenv("NEWS_SENTIMENT_THRESHOLD", 0.8)),
+                "send_trade_alerts": True,
+                "trade_amount_usd": TRADE_AMOUNT_USD
+            }
 
     def get_state(self):
-        """Retourne l'état actuel du bot pour le reporter Discord."""
+        """Retourne l'état actuel du bot, y compris le PNL non réalisé."""
+        open_positions_with_pnl = []
+        total_unrealized_pnl = 0.0
+
+        # It's better to fetch prices for all symbols at once if possible, but for now, we do it one by one.
+        for position in self.state["open_positions"]:
+            try:
+                market_data = dh.get_market_data(self.api_client, position["symbol"], TIMEFRAME, limit=1)
+                current_price = market_data['Close'].iloc[-1] if not market_data.empty else position['price']
+
+                # Calculate unrealized PNL
+                if position["side"] == "buy":
+                    unrealized_pnl = (current_price - position["price"]) * position["amount"]
+                else:  # sell
+                    unrealized_pnl = (position["price"] - current_price) * position["amount"]
+                
+                unrealized_pnl_pct = (unrealized_pnl / position["cost"]) * 100 if position["cost"] > 0 else 0
+                total_unrealized_pnl += unrealized_pnl
+
+                position_copy = position.copy()
+                position_copy["unrealized_pnl"] = unrealized_pnl
+                position_copy["unrealized_pnl_pct"] = unrealized_pnl_pct
+                position_copy["current_price"] = current_price
+                open_positions_with_pnl.append(position_copy)
+            except Exception as e:
+                print(f"Impossible de calculer le PNL pour {position['symbol']}: {e}")
+                position_copy = position.copy()
+                position_copy["unrealized_pnl"] = 0
+                position_copy["unrealized_pnl_pct"] = 0
+                position_copy["current_price"] = position['price']
+                open_positions_with_pnl.append(position_copy)
+
+        effective_balance = self.state["current_balance"] + total_unrealized_pnl
+
         return {
             "is_running": self.state["is_running"],
             "is_paused": self.state["is_paused"],
             "paused_until": self.state["paused_until"],
             "daily_initial_balance": self.state["daily_initial_balance"],
             "current_balance": self.state["current_balance"],
-            "open_positions": self.state["open_positions"],
+            "effective_balance": effective_balance,
+            "open_positions": open_positions_with_pnl,
             "current_trading_symbol": self.state["current_trading_symbol"],
             "send_trade_alerts": self.state["send_trade_alerts"],
             "trade_amount_usd": self.state["trade_amount_usd"]
@@ -236,16 +304,45 @@ class TradingBot:
         self.state["send_trade_alerts"] = enable
         print(f"Alertes de trade Discord: {'Activées' if enable else 'Désactivées'}")
 
+    async def close_trade_by_id(self, trade_id: str):
+        """Clôture manuellement une position ouverte par son ID."""
+        position_to_close = next((p for p in self.state["open_positions"] if p["trade_id"] == trade_id), None)
+
+        if not position_to_close:
+            msg = f"Aucune position ouverte trouvée avec l'ID: {trade_id}"
+            print(msg)
+            return False, msg
+
+        try:
+            symbol = position_to_close["symbol"]
+            market_data = dh.get_market_data(self.api_client, symbol, TIMEFRAME, limit=1)
+            if market_data.empty:
+                msg = f"Impossible de récupérer le prix actuel pour {symbol}."
+                return False, msg
+            
+            current_price = market_data['Close'].iloc[-1]
+            
+            profit_loss_pct = (current_price - position_to_close["price"]) / position_to_close["price"] if position_to_close["side"] == "buy" else (position_to_close["price"] - current_price) / position_to_close["price"]
+
+            await self._close_position(position_to_close, current_price, "manual_close", profit_loss_pct)
+            msg = f"Position {trade_id} fermée manuellement au prix de ${current_price:.2f}."
+            return True, msg
+        except Exception as e:
+            msg = f"Erreur lors de la clôture de la position: {e}"
+            print(f"Erreur lors de la clôture manuelle de la position {trade_id}: {e}")
+            return False, msg
+
     async def manual_execute_trade(self, symbol: str, side: str, amount_usd: float):
         """Exécute un ordre de trading manuellement."""
         print(f"Tentative d'exécution manuelle: {side} {amount_usd}$ sur {symbol}")
+        # 1. Valider le symbole
+        market_data = dh.get_market_data(self.api_client, symbol, TIMEFRAME, limit=1)
+        if market_data is None or market_data.empty:
+            msg = f"Le symbole '{symbol}' est invalide ou aucune donnée de marché n'a pu être récupérée."
+            await dr.send_report({"title": "Erreur Ordre Manuel", "message": msg, "color": discord.Color.red()})
+            return False
+
         try:
-            # Get current market data for the symbol
-            market_data = dh.get_market_data(self.api_client, symbol, TIMEFRAME, limit=1) # Get only the latest bar
-            if market_data.empty:
-                await dr.send_report({"title": "Erreur Ordre Manuel", "message": f"Impossible de récupérer les données de marché pour {symbol}.", "color": discord.Color.red()})
-                return False
-            
             current_price = market_data['Close'].iloc[-1]
             market_data_with_indicators = dh.calculate_indicators(market_data) # Needed for ATR
 
@@ -325,6 +422,7 @@ class TradingBot:
     async def main_loop(self):
         """La boucle de trading principale."""
         print("Lancement de la boucle de trading principale...")
+        loop = asyncio.get_running_loop()
         
         while self.state["is_running"]:
             await self._reset_daily_balance() # Check and reset daily balance if needed
@@ -334,26 +432,32 @@ class TradingBot:
                     self.resume() # Auto-resume if pause time is over
                 else:
                     print("Bot en pause. Attente...")
-                    time.sleep(60) # Wait 1 minute before re-checking
+                    await asyncio.sleep(60) # Wait 1 minute before re-checking
                     continue
 
             # Check for news opportunities every hour (or adjust frequency)
             if datetime.now().minute == 0: # Check at the top of the hour
                 await self._check_for_news_opportunities()
 
-            # 1. Récupérer et analyser les données de marché pour le symbole actuel
-            market_data = dh.get_market_data(self.api_client, self.state["current_trading_symbol"], TIMEFRAME)
+            # 1. Récupérer et analyser les données de marché pour le symbole actuel (non-blocking)
+            market_data = await loop.run_in_executor(
+                None, dh.get_market_data, self.api_client, self.state["current_trading_symbol"], TIMEFRAME, 100
+            )
             
-            if market_data.empty:
+            if market_data is None or market_data.empty:
                 print("Aucune donnée de marché reçue, cycle suivant.")
-                time.sleep(300) # Attendre 5 minutes avant de réessayer
+                await asyncio.sleep(300) # Attendre 5 minutes avant de réessayer
                 continue
 
-            # 2. Calculer les indicateurs
-            market_data_with_indicators = dh.calculate_indicators(market_data)
+            # 2. Calculer les indicateurs (non-blocking)
+            market_data_with_indicators = await loop.run_in_executor(
+                None, dh.calculate_indicators, market_data
+            )
 
-            # 3. Obtenir le signal de trading
-            signal = mp.get_trading_signal(market_data_with_indicators)
+            # 3. Obtenir le signal de trading (non-blocking)
+            signal = await loop.run_in_executor(
+                None, mp.get_trading_signal, market_data_with_indicators
+            )
             current_price = market_data['Close'].iloc[-1]
 
             print(f"Signal actuel pour {self.state['current_trading_symbol']}: {signal:.4f} | Prix actuel: {current_price}")
@@ -372,12 +476,12 @@ class TradingBot:
 
             # Attendre avant le prochain cycle (ex: 1 heure)
             print("Cycle terminé. En attente du prochain...")
-            time.sleep(3600) # Wait for 1 hour (adjust as needed for timeframe)
+            await asyncio.sleep(3600) # Wait for 1 hour (adjust as needed for timeframe)
 
     def run(self):
         """Point d'entrée principal pour démarrer le bot."""
         # Démarrer le bot Discord dans un thread séparé
-        discord_thread = threading.Thread(target=start_discord_bot, args=(self,), daemon=True)
+        discord_thread = threading.Thread(target=dr.start_discord_bot, args=(self,), daemon=True)
         discord_thread.start()
         
         try:
@@ -385,13 +489,17 @@ class TradingBot:
             asyncio.run(self.main_loop())
         except KeyboardInterrupt:
             print("Arrêt manuel du bot.")
-            self.state["is_running"] = False
         except Exception as e:
             print(f"Une erreur critique est survenue: {e}")
+        finally:
             self.state["is_running"] = False
+            self.save_state() # Sauvegarder l'état à l'arrêt
             # Optionally send a critical error report to Discord
             # asyncio.run(dr.send_report({"title": "ERREUR CRITIQUE", "message": f"Le bot a rencontré une erreur: {e}", "color": discord.Color.red()}))
 
 if __name__ == "__main__":
     bot = TradingBot()
-    bot.run()
+    if bot.api_client is None:
+        print("Arrêt du bot car le client API n'a pas pu être initialisé.")
+    else:
+        bot.run()

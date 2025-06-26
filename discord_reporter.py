@@ -202,8 +202,23 @@ async def help_bot(interaction: discord.Interaction):
     embed.add_field(name="/manual_order <symbole> <buy/sell> <montant_usd>", value="Place un ordre de marché manuellement pour le symbole et le montant spécifiés.", inline=False)
     embed.add_field(name="/set_trade_amount <montant_usd>", value="Définit le montant en USD à trader par position.", inline=False)
     embed.add_field(name="/set_symbol <symbole>", value="Définit le symbole de trading principal du bot (ex: SPY, AAPL).", inline=False)
+    embed.add_field(name="/close_trade <trade_id>", value="Ferme manuellement une position ouverte en utilisant son ID.", inline=False)
     embed.add_field(name="/backtest [date]", value="(Non implémenté) Lance un backtest à partir d'une date spécifiée.", inline=False)
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='close_trade', description="Ferme manuellement une position ouverte.")
+@app_commands.describe(trade_id="L'ID du trade à fermer")
+async def close_trade(interaction: discord.Interaction, trade_id: str):
+    if not trading_bot_instance:
+        await interaction.response.send_message("L'instance du bot de trading n'est pas liée.")
+        return
+
+    await interaction.response.defer() # Defer response as closing might take time
+    success, message = await trading_bot_instance.close_trade_by_id(trade_id)
+    
+    color = discord.Color.green() if success else discord.Color.red()
+    embed = discord.Embed(title="Clôture Manuelle de Trade", description=message, color=color)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name='backtest', description="Lance un backtest (non implémenté).")
 @app_commands.describe(start_date="La date de début du backtest (YYYY-MM-DD)")
