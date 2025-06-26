@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Importer les modules personnalisés
 import data_handler as dh
 import market_predictor as mp
-import discord_reporter as dr
+from discord_reporter import start_discord_bot
 
 # Charger les variables d'environnement
 load_dotenv()
@@ -47,7 +47,9 @@ class TradingBot:
             "last_daily_reset": datetime.now().date(),
             "current_trading_symbol": os.getenv("TRADE_SYMBOL", "SPY"), # Default to index ETF
             "monitored_stocks": [s.strip() for s in os.getenv("MONITORED_STOCKS", "").split(',') if s.strip()],
-            "news_sentiment_threshold": float(os.getenv("NEWS_SENTIMENT_THRESHOLD", 0.8))
+            "news_sentiment_threshold": float(os.getenv("NEWS_SENTIMENT_THRESHOLD", 0.8)),
+            "send_trade_alerts": True,
+            "trade_amount_usd": TRADE_AMOUNT_USD
         }
         print("Bot de trading initialisé.")
 
@@ -74,7 +76,10 @@ class TradingBot:
             "paused_until": self.state["paused_until"],
             "daily_initial_balance": self.state["daily_initial_balance"],
             "current_balance": self.state["current_balance"],
-            "open_positions": self.state["open_positions"] # Consider returning a copy or simplified version
+            "open_positions": self.state["open_positions"],
+            "current_trading_symbol": self.state["current_trading_symbol"],
+            "send_trade_alerts": self.state["send_trade_alerts"],
+            "trade_amount_usd": self.state["trade_amount_usd"]
         }
 
     def pause(self, minutes: int):
@@ -161,26 +166,27 @@ class TradingBot:
         dh.log_trade(position) # Log the closed trade
 
         print(f"Position {position['trade_id']} fermée ({reason}). P&L: ${profit_usd:.2f} ({profit_loss_pct:.2%})")
-        await dr.send_report({
-            "title": f"Position Fermée ({reason.replace('_', ' ').title()})",
-            "message": f"La position **{position['trade_id']}** sur **{position['symbol']}** a été fermée.",
-            "color": discord.Color.green() if profit_usd >= 0 else discord.Color.red(),
-            "fields": [
-                {"name": "Type", "value": position["side"].upper(), "inline": True},
-                {"name": "Prix d'Ouverture", "value": f"${position['price']:.2f}", "inline": True},
-                {"name": "Prix de Clôture", "value": f"${close_price:.2f}", "inline": True},
-                {"name": "P&L", "value": f"${profit_usd:.2f} ({profit_loss_pct:.2%})", "inline": True},
-                {"name": "Solde Actuel", "value": f"${self.state['current_balance']:.2f}", "inline": True}
-            ]
-        })
+        if self.state["send_trade_alerts"]:
+            await dr.send_report({
+                "title": f"Position Fermée ({reason.replace('_', ' ').title()})",
+                "message": f"La position **{position['trade_id']}** sur **{position['symbol']}** a été fermée.",
+                "color": discord.Color.green() if profit_usd >= 0 else discord.Color.red(),
+                "fields": [
+                    {"name": "Type", "value": position["side"].upper(), "inline": True},
+                    {"name": "Prix d'Ouverture", "value": f"${position['price']:.2f}", "inline": True},
+                    {"name": "Prix de Clôture", "value": f"${close_price:.2f}", "inline": True},
+                    {"name": "P&L", "value": f"${profit_usd:.2f} ({profit_loss_pct:.2%})", "inline": True},
+                    {"name": "Solde Actuel", "value": f"${self.state['current_balance']:.2f}", "inline": True}
+                ]
+            })
         # Remove from open positions
         self.state["open_positions"] = [p for p in self.state["open_positions"] if p["trade_id"] != position["trade_id"]]
 
 
-    async def _execute_trade(self, side, price, market_data_with_indicators):
+    async def _execute_trade(self, side, price, market_data_with_indicators, is_manual=False):
         """Simule l'exécution d'un ordre de trading et gère les positions."""
         trade_id = f"TRADE-{uuid.uuid4()}"
-        print(f"EXECUTION D'ORDRE ({side.upper()}) -> ID: {trade_id}, Prix: {price}, Montant: {TRADE_AMOUNT_USD}$ ")
+        print(f"EXECUTION D'ORDRE ({side.upper()}) -> ID: {trade_id}, Prix: {price}, Montant: {self.state['trade_amount_usd']}$ ")
         
         # Get latest ATR for Take-Profit adjustment
         atr_value = market_data_with_indicators['ATR_14'].iloc[-1] if 'ATR_14' in market_data_with_indicators.columns else 0.0
@@ -195,33 +201,87 @@ class TradingBot:
         trade_log = {
             'trade_id': trade_id,
             'timestamp': datetime.now(),
-            'symbol': SYMBOL,
+            'symbol': self.state['current_trading_symbol'],
             'type': 'market', # Assuming market orders for simplicity
             'side': side,
             'price': price,
-            'amount': TRADE_AMOUNT_USD / price, # Amount in base currency
-            'cost': TRADE_AMOUNT_USD, # Cost in quote currency
+            'amount': self.state['trade_amount_usd'] / price, # Amount in base currency
+            'cost': self.state['trade_amount_usd'], # Cost in quote currency
             'status': 'open',
             'profit': 0, # Initial profit is 0
             'stop_loss': stop_loss_price,
-            'take_profit': take_profit_price
+            'take_profit': take_profit_price,
+            'is_manual': is_manual
         }
         
         dh.log_trade(trade_log)
         self.state["open_positions"].append(trade_log)
         
-        await dr.send_report({
-            "title": "Nouvelle Position Ouverte",
-            "message": f"Une nouvelle position **{side.upper()}** a été ouverte sur **{self.state['current_trading_symbol']}**.",
-            "color": discord.Color.blue(),
-            "fields": [
-                {"name": "ID du Trade", "value": trade_id, "inline": True},
-                {"name": "Prix d'Ouverture", "value": f"${price:.2f}", "inline": True},
-                {"name": "Montant", "value": f"{trade_log['amount']:.4f} {self.state['current_trading_symbol'].split('/')[0]}", "inline": True},
-                {"name": "Stop-Loss", "value": f"${stop_loss_price:.2f}", "inline": True},
-                {"name": "Take-Profit", "value": f"${take_profit_price:.2f}", "inline": True}
-            ]
-        })
+        if self.state["send_trade_alerts"]:
+            await dr.send_report({
+                "title": "Nouvelle Position Ouverte",
+                "message": f"Une nouvelle position **{side.upper()}** a été ouverte sur **{self.state['current_trading_symbol']}**.",
+                "color": discord.Color.blue(),
+                "fields": [
+                    {"name": "ID du Trade", "value": trade_id, "inline": True},
+                    {"name": "Prix d'Ouverture", "value": f"${price:.2f}", "inline": True},
+                    {"name": "Montant", "value": f"{trade_log['amount']:.4f} {self.state['current_trading_symbol'].split('/')[0]}", "inline": True},
+                    {"name": "Stop-Loss", "value": f"${stop_loss_price:.2f}", "inline": True},
+                    {"name": "Take-Profit", "value": f"${take_profit_price:.2f}", "inline": True}
+                ]
+            })
+
+    def set_trade_alerts(self, enable: bool):
+        """Active ou désactive l'envoi d'alertes de trade sur Discord."""
+        self.state["send_trade_alerts"] = enable
+        print(f"Alertes de trade Discord: {'Activées' if enable else 'Désactivées'}")
+
+    async def manual_execute_trade(self, symbol: str, side: str, amount_usd: float):
+        """Exécute un ordre de trading manuellement."""
+        print(f"Tentative d'exécution manuelle: {side} {amount_usd}$ sur {symbol}")
+        try:
+            # Get current market data for the symbol
+            market_data = dh.get_market_data(self.api_client, symbol, TIMEFRAME, limit=1) # Get only the latest bar
+            if market_data.empty:
+                await dr.send_report({"title": "Erreur Ordre Manuel", "message": f"Impossible de récupérer les données de marché pour {symbol}.", "color": discord.Color.red()})
+                return False
+            
+            current_price = market_data['Close'].iloc[-1]
+            market_data_with_indicators = dh.calculate_indicators(market_data) # Needed for ATR
+
+            await self._execute_trade(side, current_price, market_data_with_indicators, is_manual=True)
+            await dr.send_report({"title": "Ordre Manuel Exécuté", "message": f"Ordre manuel **{side.upper()} {amount_usd}$** sur **{symbol}** exécuté au prix de **${current_price:.2f}**.", "color": discord.Color.green()})
+            return True
+        except Exception as e:
+            print(f"Erreur lors de l'exécution manuelle de l'ordre: {e}")
+            await dr.send_report({"title": "Erreur Ordre Manuel", "message": f"Une erreur est survenue lors de l'exécution de l'ordre manuel: {e}", "color": discord.Color.red()})
+            return False
+
+    def set_trade_amount(self, amount_usd: float):
+        """Définit le montant de trade en USD."""
+        self.state["trade_amount_usd"] = amount_usd
+        print(f"Montant de trade défini à {amount_usd}$.")
+
+    def set_trading_symbol(self, symbol: str):
+        """Définit le symbole de trading principal."""
+        self.state["current_trading_symbol"] = symbol
+        print(f"Symbole de trading principal défini à {symbol}.")
+
+    def get_recent_trades(self, hours: int = 24):
+        """Récupère les trades journalisés des dernières X heures."""
+        try:
+            if not os.path.exists(dh.TRADES_FILE):
+                return []
+            
+            df = pd.read_parquet(dh.TRADES_FILE)
+            # Ensure timestamp is datetime and filter
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            time_threshold = datetime.now() - timedelta(hours=hours)
+            recent_trades = df[df['timestamp'] >= time_threshold].to_dict(orient='records')
+            return recent_trades
+        except Exception as e:
+            print(f"Erreur lors de la récupération des trades récents: {e}")
+            return []
 
     async def _check_for_news_opportunities(self):
         """Vérifie les actualités pour les actions surveillées et ajuste le symbole de trading."""
@@ -246,19 +306,21 @@ class TradingBot:
         if best_opportunity_symbol and self.state["current_trading_symbol"] != best_opportunity_symbol:
             self.state["current_trading_symbol"] = best_opportunity_symbol
             print(f"Symbole de trading ajusté à {best_opportunity_symbol} en raison d'actualités intéressantes (Sentiment: {highest_sentiment_score:.2f}).")
-            await dr.send_report({
-                "title": "Opportunité d'Actualité Détectée",
-                "message": f"Le bot va temporairement trader **{best_opportunity_symbol}** en raison d'un sentiment d'actualité fort ({highest_sentiment_score:.2f}).",
-                "color": discord.Color.purple()
-            })
+            if self.state["send_trade_alerts"]:
+                await dr.send_report({
+                    "title": "Opportunité d'Actualité Détectée",
+                    "message": f"Le bot va temporairement trader **{best_opportunity_symbol}** en raison d'un sentiment d'actualité fort ({highest_sentiment_score:.2f}).",
+                    "color": discord.Color.purple()
+                })
         elif not best_opportunity_symbol and self.state["current_trading_symbol"] != SYMBOL: # Revert to default if no strong news
             self.state["current_trading_symbol"] = SYMBOL
             print(f"Revenant au symbole de trading par défaut : {SYMBOL}.")
-            await dr.send_report({
-                "title": "Retour au Trading d'Indice",
-                "message": f"Aucune nouvelle opportunité détectée. Retour au trading de **{SYMBOL}**.",
-                "color": discord.Color.light_gray()
-            })
+            if self.state["send_trade_alerts"]:
+                await dr.send_report({
+                    "title": "Retour au Trading d'Indice",
+                    "message": f"Aucune nouvelle opportunité détectée. Retour au trading de **{SYMBOL}**.",
+                    "color": discord.Color.light_gray()
+                })
 
     async def main_loop(self):
         """La boucle de trading principale."""
@@ -315,7 +377,7 @@ class TradingBot:
     def run(self):
         """Point d'entrée principal pour démarrer le bot."""
         # Démarrer le bot Discord dans un thread séparé
-        discord_thread = threading.Thread(target=dr.start_discord_bot, args=(self,), daemon=True)
+        discord_thread = threading.Thread(target=start_discord_bot, args=(self,), daemon=True)
         discord_thread.start()
         
         try:
