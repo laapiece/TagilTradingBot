@@ -1,0 +1,17 @@
+# Dépendances principales
+pandas
+numpy<2.0.0
+pyarrow
+requests
+python-dotenv
+discord.py
+transformers
+bitsandbytes
+accelerate
+torch
+newsapi-python
+ccxt
+alpaca-py
+
+# Pour les indicateurs techniques
+pandas-ta

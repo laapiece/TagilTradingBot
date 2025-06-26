@@ -1,0 +1,159 @@
+## Tutoriel : Configuration et Lancement du Bot de Trading IA
+
+Ce guide vous expliquera comment préparer votre environnement, configurer les clés API nécessaires et lancer le bot, soit directement via Python, soit en utilisant Docker.
+
+### Prérequis
+
+Avant de commencer, assurez-vous d'avoir les éléments suivants installés sur votre système :
+
+*   **Python 3.9+** : [Télécharger Python](https://www.python.org/downloads/)
+*   **pip** (généralement inclus avec Python)
+*   **Git** : [Télécharger Git](https://git-scm.com/downloads)
+*   **Docker Desktop** (si vous prévoyez d'utiliser Docker) : [Télécharger Docker Desktop](https://www.docker.com/products/docker-desktop)
+
+### Étape 1 : Cloner le Dépôt du Projet
+
+Ouvrez votre terminal ou invite de commande et exécutez la commande suivante pour cloner le projet :
+
+```bash
+git clone https://github.com/votre_utilisateur/votre_repo.git # Remplacez par le vrai lien si le projet est sur GitHub
+cd gemini # Naviguez vers le répertoire du projet
+```
+
+### Étape 2 : Configuration de l'Environnement Python
+
+Il est fortement recommandé d'utiliser un environnement virtuel pour isoler les dépendances du projet.
+
+1.  **Créer un environnement virtuel :**
+    ```bash
+    python -m venv venv
+    ```
+
+2.  **Activer l'environnement virtuel :**
+    *   **Windows :**
+        ```bash
+        .\venv\Scripts\activate
+        ```
+    *   **macOS/Linux :**
+        ```bash
+        source venv/bin/activate
+        ```
+    (Vous devriez voir `(venv)` apparaître au début de votre ligne de commande, indiquant que l'environnement est activé.)
+
+3.  **Installer les dépendances Python :**
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *Note : L'installation de `torch` et `bitsandbytes` peut prendre un certain temps et nécessiter des compilations spécifiques à votre système (CPU/GPU). Si vous rencontrez des problèmes, consultez la documentation de ces bibliothèques.*
+
+### Étape 3 : Configuration des Clés API et Paramètres
+
+Le bot utilise un fichier `.env` pour stocker les informations sensibles (clés API) et les paramètres de configuration.
+
+1.  **Créer le fichier `.env` :**
+    Copiez le fichier d'exemple fourni :
+    ```bash
+    copy .env.example .env # Windows
+    cp .env.example .env # macOS/Linux
+    ```
+
+2.  **Ouvrir et éditer le fichier `.env` :**
+    Ouvrez le fichier `.env` nouvellement créé avec un éditeur de texte (comme Notepad, VS Code, Sublime Text, etc.).
+
+    Vous devrez remplir les valeurs suivantes :
+
+    *   **`DISCORD_BOT_TOKEN`** :
+        *   Créez une application Discord sur le [portail des développeurs Discord](https://discord.com/developers/applications).
+        *   Sous votre application, allez dans `Bot`, puis `Add Bot`.
+        *   Copiez le "TOKEN" de votre bot. **Ne le partagez jamais !**
+        *   Assurez-vous d'activer les `Privileged Gateway Intents` (`PRESENCE INTENT`, `SERVER MEMBERS INTENT`, `MESSAGE CONTENT INTENT`) sous l'onglet `Bot` de votre application Discord.
+
+    *   **`DISCORD_CHANNEL_ID`** :
+        *   Dans Discord, activez le "Mode développeur" (Paramètres utilisateur > Avancé).
+        *   Faites un clic droit sur le canal où le bot doit envoyer les rapports et recevoir les commandes, puis sélectionnez "Copier l'ID".
+
+    *   **`NEWS_API_KEY`** :
+        *   Obtenez une clé API gratuite sur [NewsAPI.org](https://newsapi.org/).
+
+    *   **`ALPACA_API_KEY`** et **`ALPACA_SECRET_KEY`** :
+        *   Créez un compte sur [Alpaca Markets](https://alpaca.markets/) (utilisez le compte de démonstration pour commencer).
+        *   Accédez à votre tableau de bord et générez vos clés API.
+
+    *   **Paramètres de Trading (ajustez selon vos préférences) :**
+        *   `TRADE_SYMBOL` : Symbole boursier par défaut pour le trading d'indices (ex: `SPY`, `QQQ`).
+        *   `MONITORED_STOCKS` : Liste de symboles d'actions à surveiller pour les actualités, séparés par des virgules (ex: `AAPL,MSFT,GOOGL`).
+        *   `NEWS_SENTIMENT_THRESHOLD` : Seuil de sentiment (entre 0 et 1) pour déclencher le trading d'une action spécifique (ex: `0.8` pour un sentiment très positif ou très négatif).
+        *   `TRADE_TIMEFRAME` : Intervalle de temps pour les données (ex: `1Min`, `15Min`, `1Hour`, `1Day`).
+        *   `TRADE_AMOUNT_USD` : Montant en USD à allouer par transaction.
+        *   `INITIAL_BALANCE` : Solde initial de votre compte de démonstration pour les calculs internes du bot.
+        *   `STOP_LOSS_PCT` : Pourcentage de perte maximale avant de clôturer une position.
+        *   `TAKE_PROFIT_PCT` : Pourcentage de profit souhaité avant de clôturer une position.
+        *   `MAX_DAILY_DRAWDOWN_PCT` : Pourcentage de perte maximale sur le solde initial journalier avant d'arrêter le bot.
+
+    Votre fichier `.env` devrait ressembler à ceci (avec vos propres valeurs) :
+
+    ```ini
+    DISCORD_BOT_TOKEN="VOTRE_TOKEN_DISCORD_ICI"
+    DISCORD_CHANNEL_ID="VOTRE_ID_CANAL_DISCORD_ICI"
+    NEWS_API_KEY="VOTRE_CLE_API_NEWSAPI_ICI"
+    ALPACA_API_KEY="VOTRE_CLE_API_ALPACA_ICI"
+    ALPACA_SECRET_KEY="VOTRE_CLE_SECRETE_ALPACA_ICI"
+
+    TRADE_SYMBOL="SPY"
+    MONITORED_STOCKS="AAPL,MSFT,GOOGL"
+    NEWS_SENTIMENT_THRESHOLD=0.8
+    TRADE_TIMEFRAME="1Hour"
+    TRADE_AMOUNT_USD=100
+    INITIAL_BALANCE=10000
+
+    STOP_LOSS_PCT=0.02
+    TAKE_PROFIT_PCT=0.03
+    MAX_DAILY_DRAWDOWN_PCT=0.05
+    ```
+
+### Étape 4 : Lancement du Bot
+
+Vous avez deux options pour lancer le bot : directement via Python ou en utilisant Docker.
+
+#### Option A : Lancement Direct via Python
+
+Assurez-vous que votre environnement virtuel est toujours activé (voir Étape 2).
+
+```bash
+python trading_bot.py
+```
+
+Le bot démarrera et vous verrez des messages dans votre terminal. Le bot Discord devrait également se connecter et être visible dans votre serveur Discord.
+
+#### Option B : Lancement via Docker (Recommandé pour le Déploiement)
+
+1.  **Construire l'image Docker :**
+    Assurez-vous d'être dans le répertoire racine de votre projet (où se trouve le `Dockerfile`).
+    ```bash
+    docker build -t trading-bot .
+    ```
+    Cette commande va construire l'image Docker. Cela peut prendre un certain temps lors de la première exécution, car elle téléchargera toutes les dépendances et le modèle IA.
+
+2.  **Lancer le conteneur Docker :**
+    ```bash
+    docker run --env-file .env trading-bot
+    ```
+    Cette commande lance le bot dans un conteneur Docker, en utilisant les variables d'environnement de votre fichier `.env`.
+
+### Étape 5 : Interagir avec le Bot sur Discord
+
+Une fois le bot lancé et connecté à Discord, vous pouvez interagir avec lui en utilisant les commandes suivantes dans le canal que vous avez configuré :
+
+*   `/status` : Affiche l'état actuel du bot, y compris son solde, les positions ouvertes et son statut (actif/en pause).
+*   `/pause [minutes]` : Met le bot en pause pour le nombre de minutes spécifié (par défaut : 60 minutes).
+*   `/resume` : Reprend les opérations du bot s'il était en pause.
+*   `/backtest [date]` : (Fonctionnalité non implémentée dans cette version, mais le bot reconnaîtra la commande).
+
+### Notes Importantes
+
+*   **Clés API** : Gardez vos clés API secrètes et ne les partagez jamais. Le fichier `.env` est ignoré par Git pour cette raison.
+*   **Compte de Démonstration** : Commencez toujours avec un compte de démonstration (paper trading) sur Alpaca pour tester la logique du bot avant d'envisager un trading réel.
+*   **Modèle IA** : Le modèle IA (StableLM-3B) sera téléchargé la première fois que `market_predictor.py` est exécuté. Cela nécessite une connexion Internet stable et peut prendre du temps.
+*   **Timeframe** : Assurez-vous que le `TRADE_TIMEFRAME` dans votre `.env` correspond à un `TimeFrame` valide de la bibliothèque `alpaca-py` (ex: `1Min`, `5Min`, `1Hour`, `1Day`).
+
+---
